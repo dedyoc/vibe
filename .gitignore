@@ -205,3 +205,36 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# Kafka & Streaming
+kafka-logs/
+kafka_*/
+zookeeper/
+flink-checkpoints/
+flink-savepoints/
+*.checkpoint
+*.savepoint
+
+# Data files
+*.parquet
+*.avro
+*.json.gz
+data/
+logs/
+tmp/
+
+# IDE & OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local configuration
+config/local/
+.local/
+local.env
