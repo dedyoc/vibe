@@ -1,0 +1,81 @@
+# Ruff configuration for Bluesky streaming pipeline
+# This configuration ensures consistent code style and catches common issues
+
+# Python version compatibility
+target-version = "py39"
+
+# Line length to match black's default
+line-length = 88
+
+# Enable specific rule sets
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings  
+    "F",   # pyflakes
+    "I",   # isort imports
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "S",   # flake8-bandit security
+    "T20", # flake8-print
+    "PT",  # flake8-pytest-style
+    "RET", # flake8-return
+    "SIM", # flake8-simplify
+    "ARG", # flake8-unused-arguments
+    "DTZ", # flake8-datetimez
+    "ERA", # eradicate commented code
+    "PL",  # pylint
+    "TRY", # tryceratops
+]
+
+# Ignore specific rules that may be too strict for this project
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "C901",   # function is too complex
+    "PLR0913", # too many arguments
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+    "S101",   # use of assert (common in tests)
+    "T201",   # print statements (useful for debugging)
+    "TRY003", # avoid specifying long messages outside exception class
+]
+
+# Exclude certain directories and files
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+# Per-file ignores for specific patterns
+[per-file-ignores]
+"__init__.py" = ["F401"]  # Allow unused imports in __init__.py
+"tests/**/*" = [
+    "S101",   # Allow assert statements in tests
+    "ARG001", # Allow unused function arguments in tests
+    "PLR2004", # Allow magic values in tests
+]
+"config/**/*" = [
+    "S105",   # Hardcoded password (config files may have examples)
+    "S106",   # Hardcoded password in function argument
+]
+
+# Import sorting configuration
+[isort]
+known-first-party = ["shared", "services"]
+force-single-line = false
+combine-as-imports = true
+split-on-trailing-comma = true
+
+# Specific rule configurations
+[flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[mccabe]
+max-complexity = 10
