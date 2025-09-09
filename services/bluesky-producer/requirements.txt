@@ -1,0 +1,21 @@
+# Core dependencies
+atproto>=0.0.40
+kafka-python>=2.0.2
+redis>=5.0.0
+
+# Monitoring and metrics
+prometheus-client>=0.19.0
+
+# HTTP server for health checks
+fastapi>=0.104.0
+uvicorn>=0.24.0
+
+# Utilities
+pydantic>=2.5.0
+structlog>=23.2.0
+python-dotenv>=1.0.0
+
+# Development and testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.12.0
