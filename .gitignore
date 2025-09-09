@@ -213,7 +213,7 @@ docker-compose.override.yml
 # Kafka & Streaming
 kafka-logs/
 kafka_*/
-zookeeper/
+kraft-combined-logs/
 flink-checkpoints/
 flink-savepoints/
 *.checkpoint
