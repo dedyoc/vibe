@@ -36,7 +36,10 @@
   - Write unit tests for firehose message parsing with mock ATProto client
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
-- [ ] 4. Build Kafka producer for Bluesky posts
+- [-] 4. Build Kafka producer for Bluesky posts
+
+
+
   - Implement KafkaPostProducer class with JSON serialization
   - Add partitioning strategy based on author DID for load balancing
   - Implement retry logic with exponential backoff for connection failures

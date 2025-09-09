@@ -19,6 +19,7 @@ import uvicorn
 import structlog
 
 from bluesky_client import BlueskyFirehoseClient
+from kafka_producer import KafkaProducerManager
 
 # Configure structured logging
 structlog.configure(
@@ -47,8 +48,9 @@ PROCESSING_TIME = Histogram('bluesky_processing_seconds', 'Time spent processing
 CONNECTION_ATTEMPTS = Counter('bluesky_connection_attempts_total', 'Total connection attempts')
 RECONNECTIONS = Counter('bluesky_reconnections_total', 'Total reconnection attempts')
 
-# Global client instance
+# Global client instances
 firehose_client: Optional[BlueskyFirehoseClient] = None
+kafka_manager: Optional[KafkaProducerManager] = None
 shutdown_event = asyncio.Event()
 
 # FastAPI app for health checks and metrics
@@ -58,18 +60,26 @@ app = FastAPI(title="Bluesky Producer", version="1.0.0")
 @app.get("/health")
 async def health_check() -> Dict[str, Any]:
     """Health check endpoint for Docker health checks."""
-    global firehose_client
+    global firehose_client, kafka_manager
     
-    if firehose_client is None:
+    if firehose_client is None or kafka_manager is None:
         return {"status": "starting", "service": "bluesky-producer"}
     
-    stats = firehose_client.get_stats()
+    firehose_stats = firehose_client.get_stats()
+    kafka_stats = kafka_manager.get_all_stats()
+    
+    # Check if both firehose and kafka are healthy
+    firehose_healthy = firehose_stats['is_connected']
+    kafka_healthy = any(stats['is_connected'] for stats in kafka_stats.values()) if kafka_stats else False
+    
     return {
-        "status": "healthy" if stats['is_connected'] else "unhealthy",
+        "status": "healthy" if (firehose_healthy and kafka_healthy) else "unhealthy",
         "service": "bluesky-producer",
-        "connected": stats['is_connected'],
-        "posts_processed": stats['posts_processed'],
-        "last_message_time": stats['last_message_time']
+        "firehose_connected": firehose_healthy,
+        "kafka_connected": kafka_healthy,
+        "posts_processed": firehose_stats['posts_processed'],
+        "last_message_time": firehose_stats['last_message_time'],
+        "kafka_topics": list(kafka_stats.keys())
     }
 
 
@@ -82,16 +92,19 @@ async def metrics() -> Response:
 @app.get("/")
 async def root() -> Dict[str, Any]:
     """Root endpoint with service information."""
-    global firehose_client
+    global firehose_client, kafka_manager
     
     base_info = {
         "service": "bluesky-producer",
         "status": "running",
-        "description": "Bluesky firehose data producer"
+        "description": "Bluesky firehose data producer with Kafka publishing"
     }
     
     if firehose_client:
         base_info.update(firehose_client.get_stats())
+    
+    if kafka_manager:
+        base_info["kafka_stats"] = kafka_manager.get_all_stats()
     
     return base_info
 
@@ -99,24 +112,43 @@ async def root() -> Dict[str, Any]:
 @app.get("/stats")
 async def get_stats() -> Dict[str, Any]:
     """Get detailed client statistics."""
-    global firehose_client
+    global firehose_client, kafka_manager
+    
+    stats = {}
     
     if firehose_client is None:
-        return {"error": "Client not initialized"}
+        stats["firehose"] = {"error": "Firehose client not initialized"}
+    else:
+        stats["firehose"] = firehose_client.get_stats()
     
-    return firehose_client.get_stats()
+    if kafka_manager is None:
+        stats["kafka"] = {"error": "Kafka manager not initialized"}
+    else:
+        stats["kafka"] = kafka_manager.get_all_stats()
+    
+    return stats
 
 
 async def process_firehose_data() -> None:
-    """Process data from Bluesky firehose."""
-    global firehose_client
+    """Process data from Bluesky firehose and publish to Kafka."""
+    global firehose_client, kafka_manager
     
     log = logger.bind(component="firehose_processor")
     
+    # Get configuration
+    kafka_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    kafka_topic = os.getenv("KAFKA_TOPIC_POSTS", "bluesky-posts")
+    
     while not shutdown_event.is_set():
         try:
+            # Initialize clients if needed
             if firehose_client is None:
                 firehose_client = BlueskyFirehoseClient()
+            
+            if kafka_manager is None:
+                kafka_manager = KafkaProducerManager(kafka_servers)
+                log.info("Initialized Kafka producer manager", 
+                        servers=kafka_servers, topic=kafka_topic)
             
             # Connect to firehose
             CONNECTION_ATTEMPTS.inc()
@@ -129,12 +161,25 @@ async def process_firehose_data() -> None:
                     break
                 
                 POSTS_PROCESSED.inc()
-                log.debug("Processed post", 
-                         author=post_data.author_did,
-                         text_length=len(post_data.text),
-                         hashtags=len(post_data.hashtags))
                 
-                # TODO: Send to Kafka (Task 4)
+                # Publish to Kafka
+                try:
+                    success = await kafka_manager.publish_to_topic(kafka_topic, post_data)
+                    if success:
+                        log.debug("Published post to Kafka", 
+                                 author=post_data.author_did,
+                                 text_length=len(post_data.text),
+                                 hashtags=len(post_data.hashtags),
+                                 topic=kafka_topic)
+                    else:
+                        log.warning("Failed to publish post to Kafka",
+                                   author=post_data.author_did,
+                                   topic=kafka_topic)
+                        
+                except Exception as kafka_error:
+                    log.error("Error publishing to Kafka", 
+                             error=str(kafka_error),
+                             author=post_data.author_did)
                 
         except Exception as e:
             log.error("Error in firehose processing", error=str(e))
@@ -154,13 +199,26 @@ async def process_firehose_data() -> None:
 
 async def shutdown_handler() -> None:
     """Handle graceful shutdown."""
-    global firehose_client
+    global firehose_client, kafka_manager
     
     logger.info("Shutting down Bluesky Producer service...")
     shutdown_event.set()
     
+    # Close Kafka producers first to flush pending messages
+    if kafka_manager:
+        try:
+            await kafka_manager.close_all()
+            logger.info("Kafka producers closed")
+        except Exception as e:
+            logger.error("Error closing Kafka producers", error=str(e))
+    
+    # Close firehose client
     if firehose_client:
-        await firehose_client.disconnect()
+        try:
+            await firehose_client.disconnect()
+            logger.info("Firehose client disconnected")
+        except Exception as e:
+            logger.error("Error disconnecting firehose client", error=str(e))
     
     logger.info("Shutdown complete")
 
