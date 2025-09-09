@@ -36,7 +36,10 @@
   - Write unit tests for firehose message parsing with mock ATProto client
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
-- [-] 4. Build Kafka producer for Bluesky posts
+- [x] 4. Build Kafka producer for Bluesky posts
+
+
+
 
 
 
