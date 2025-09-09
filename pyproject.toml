@@ -21,6 +21,24 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
+dependencies = [
+    "atproto>=0.0.62",
+    "fastapi>=0.116.1",
+    "httpx>=0.28.1",
+    "kafka-python>=2.2.15",
+    "prometheus-client>=0.22.1",
+    "pydantic>=2.11.7",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.1.0",
+    "pytest-mock>=3.15.0",
+    "python-dotenv>=1.1.1",
+    "redis>=6.4.0",
+    "structlog>=25.4.0",
+    "uvicorn>=0.35.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["shared"]
 
 dependencies = [
     "atproto>=0.0.46",
