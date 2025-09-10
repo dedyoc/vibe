@@ -61,7 +61,11 @@
   - Write tests for data storage and retrieval operations
   - _Requirements: 3.1, 6.1_
 
-- [ ] 6. Build Redis caching layer
+- [x] 6. Build Redis caching layer
+
+
+
+
   - Implement CacheLayer class for real-time trend data caching
   - Add TTL-based cache management for trending keywords
   - Create cache invalidation strategies for expired trends
