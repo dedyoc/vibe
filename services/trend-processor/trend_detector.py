@@ -14,10 +14,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from statistics import mean, stdev
 
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
-from models import WindowedKeywordCount, TrendAlert
+from shared.models import WindowedKeywordCount, TrendAlert
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

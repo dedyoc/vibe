@@ -5,11 +5,10 @@ USER root
 
 # Install additional dependencies for Redis and S3 connectivity
 RUN pip install --no-cache-dir \
-    redis==5.0.1 \
+    redis==4.6.0 \
     boto3==1.34.0 \
     s3fs==2023.12.2 \
-    sqlalchemy-redshift==0.8.14 \
-    redis-py-cluster==2.1.3
+    sqlalchemy-redshift==0.8.14
 
 # Install Redis CLI for health checks
 RUN apt-get update && apt-get install -y redis-tools && rm -rf /var/lib/apt/lists/*

@@ -19,10 +19,7 @@ from kafka import KafkaProducer
 from kafka.errors import KafkaError, KafkaTimeoutError, NoBrokersAvailable
 import structlog
 
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
-from models import TrendAlert
+from shared.models import TrendAlert
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

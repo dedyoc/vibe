@@ -12,10 +12,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import structlog
 
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
-from models import TrendAlert, WindowedKeywordCount
+from shared.models import TrendAlert, WindowedKeywordCount
 
 from trend_detector import TrendDetector, TrendDetectionConfig, create_trend_detection_config
 from trend_alert_publisher import TrendAlertPublisherManager
