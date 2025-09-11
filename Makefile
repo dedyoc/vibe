@@ -11,24 +11,24 @@ help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 up: ## Start all services
-	docker-compose up -d
+	docker compose up -d
 	@echo "Services starting... Use 'make logs' to view logs or 'make status' to check health"
 
 down: ## Stop all services
-	docker-compose down
+	docker compose down
 
 logs: ## View logs from all services
-	docker-compose logs -f
+	docker compose logs -f
 
 build: ## Build application services
-	docker-compose build
+	docker compose build
 
 clean: ## Stop services and remove volumes (WARNING: This will delete all data)
-	docker-compose down -v --remove-orphans
+	docker compose down -v --remove-orphans
 	docker system prune -f
 
 status: ## Show status of all services
-	docker-compose ps
+	docker compose ps
 
 health: ## Check health of all services
 	@echo "Checking service health..."
@@ -42,30 +42,30 @@ health: ## Check health of all services
 	@echo "Trend Processor: $$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health || echo "DOWN")"
 
 dev-tools: ## Start development tools (Kafka UI, Redis Commander)
-	docker-compose --profile dev-tools up -d kafka-ui redis-commander
+	docker compose --profile dev-tools up -d kafka-ui redis-commander
 	@echo "Development tools started:"
 	@echo "  Kafka UI: http://localhost:8080"
 	@echo "  Redis Commander: http://localhost:8081"
 
 restart: ## Restart all services
-	docker-compose restart
+	docker compose restart
 
 rebuild: ## Rebuild and restart application services
-	docker-compose build bluesky-producer trend-processor
-	docker-compose up -d bluesky-producer trend-processor
+	docker compose build bluesky-producer trend-processor
+	docker compose up -d bluesky-producer trend-processor
 
 # Service-specific commands
 kafka-logs: ## View Kafka logs
-	docker-compose logs -f kafka
+	docker compose logs -f kafka
 
 flink-logs: ## View Flink logs
-	docker-compose logs -f flink-jobmanager flink-taskmanager
+	docker compose logs -f flink-jobmanager flink-taskmanager
 
 app-logs: ## View application service logs
-	docker-compose logs -f bluesky-producer trend-processor
+	docker compose logs -f bluesky-producer trend-processor
 
 monitoring-logs: ## View monitoring service logs
-	docker-compose logs -f prometheus grafana
+	docker compose logs -f prometheus grafana
 
 # Quick access to service UIs
 urls: ## Show URLs for all web interfaces

@@ -341,7 +341,8 @@ class FlinkJobDeployer:
                 "--minio-endpoint", self.config.get('minio_endpoint', 'http://minio:9000'),
                 "--minio-access-key", self.config.get('minio_access_key', 'minioadmin'),
                 "--minio-secret-key", self.config.get('minio_secret_key', 'minioadmin123'),
-                "--window-size-minutes", str(self.config.get('window_size_minutes', 10))
+                "--window-size-minutes", str(self.config.get('window_size_minutes', 10)),
+                "--slide-interval-minutes", str(self.config.get('slide_interval_minutes', 1))
             ]
             
             # Submit the job
@@ -435,7 +436,8 @@ async def main():
         'minio_access_key': 'minioadmin',
         'minio_secret_key': 'minioadmin123',
         'parallelism': 2,
-        'window_size_minutes': 10
+        'window_size_minutes': 10,
+        'slide_interval_minutes': 1
     }
     
     async with FlinkJobManager() as job_manager:
