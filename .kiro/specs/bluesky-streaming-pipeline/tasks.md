@@ -92,7 +92,14 @@
   - Add basic integration tests for Flink job deployment
   - _Requirements: 3.1, 3.2, 3.5_
 
-- [ ] 8. Build sliding window aggregation for keyword counting
+- [x] 8. Build sliding window aggregation for keyword counting
+
+
+
+
+
+
+
   - Implement sliding window operations in Flink with configurable duration
   - Create keyword frequency counting with normalization (lowercase, punctuation removal)
   - Add state management using RocksDB backend for window persistence

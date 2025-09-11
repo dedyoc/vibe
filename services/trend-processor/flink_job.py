@@ -69,6 +69,111 @@ class MockTypes:
 class MockSimpleStringSchema:
     pass
 
+class MockRuntimeContext:
+    """Mock runtime context for state management."""
+    
+    def __init__(self):
+        self._state_storage = {}
+        self._map_state_storage = {}
+        self._list_state_storage = {}
+    
+    def get_state(self, descriptor):
+        return MockValueState(descriptor.name, self._state_storage)
+    
+    def get_value_state(self, descriptor):
+        return MockValueState(descriptor.name, self._state_storage)
+    
+    def get_map_state(self, descriptor):
+        return MockMapState(descriptor.name, self._map_state_storage)
+    
+    def get_list_state(self, descriptor):
+        return MockListState(descriptor.name, self._list_state_storage)
+
+class MockValueState:
+    """Mock value state for testing."""
+    
+    def __init__(self, name: str, storage: Dict[str, Any]):
+        self.name = name
+        self.storage = storage
+    
+    def value(self):
+        return self.storage.get(self.name)
+    
+    def update(self, value):
+        self.storage[self.name] = value
+    
+    def clear(self):
+        if self.name in self.storage:
+            del self.storage[self.name]
+
+class MockMapState:
+    """Mock map state for testing."""
+    
+    def __init__(self, name: str, storage: Dict[str, Dict[str, Any]]):
+        self.name = name
+        self.storage = storage
+        if name not in self.storage:
+            self.storage[name] = {}
+    
+    def get(self, key):
+        return self.storage[self.name].get(key)
+    
+    def put(self, key, value):
+        self.storage[self.name][key] = value
+    
+    def remove(self, key):
+        if key in self.storage[self.name]:
+            del self.storage[self.name][key]
+    
+    def keys(self):
+        return self.storage[self.name].keys()
+    
+    def clear(self):
+        self.storage[self.name].clear()
+
+class MockListState:
+    """Mock list state for testing."""
+    
+    def __init__(self, name: str, storage: Dict[str, List[Any]]):
+        self.name = name
+        self.storage = storage
+        if name not in self.storage:
+            self.storage[name] = []
+    
+    def get(self):
+        return self.storage[self.name]
+    
+    def add(self, value):
+        self.storage[self.name].append(value)
+    
+    def clear(self):
+        self.storage[self.name].clear()
+
+class MockTimerService:
+    """Mock timer service for testing."""
+    
+    def __init__(self):
+        self.timers = []
+    
+    def register_event_time_timer(self, timestamp: int):
+        self.timers.append(timestamp)
+    
+    def register_processing_time_timer(self, timestamp: int):
+        self.timers.append(timestamp)
+
+class MockProcessingContext:
+    """Mock processing context for testing."""
+    
+    def __init__(self, timestamp: int = None):
+        self._timestamp = timestamp or int(datetime.now().timestamp() * 1000)
+        self._timer_service = MockTimerService()
+    
+    def timestamp(self):
+        return self._timestamp
+    
+    def timer_service(self):
+        return self._timer_service
+
 class MockStreamExecutionEnvironment:
     def __init__(self):
         self.parallelism = 1
@@ -269,32 +374,207 @@ class KeywordExtractor(FlatMapFunction):
         return list(set(keywords))  # Remove duplicates
 
 
-class KeywordAggregator(KeyedProcessFunction):
-    """Aggregates keyword counts within time windows and tracks unique authors."""
+class SlidingWindowAggregator(KeyedProcessFunction):
+    """
+    Aggregates keyword counts within sliding time windows and tracks unique authors.
     
-    def __init__(self, window_size_minutes: int = 10):
+    This class implements a sliding window aggregation using Flink's process function
+    with RocksDB state backend for persistence. It maintains separate state for each
+    time window and handles window expiration automatically.
+    """
+    
+    def __init__(self, window_size_minutes: int = 10, slide_interval_minutes: int = 1):
         """
-        Initialize the keyword aggregator.
+        Initialize the sliding window aggregator.
         
         Args:
             window_size_minutes: Size of the sliding window in minutes
+            slide_interval_minutes: Slide interval for the window in minutes
         """
         self.window_size_minutes = window_size_minutes
-        self.count_state = None
-        self.authors_state = None
+        self.slide_interval_minutes = slide_interval_minutes
+        self.window_size_ms = window_size_minutes * 60 * 1000
+        self.slide_interval_ms = slide_interval_minutes * 60 * 1000
+        
+        # State descriptors for RocksDB backend
+        self.window_counts_state = None
+        self.window_authors_state = None
+        self.cleanup_timer_state = None
     
     def open(self, runtime_context):
-        """Initialize state descriptors."""
-        self.count_state = runtime_context.get_state(
-            ValueStateDescriptor("keyword_count", FlinkTypes.INT())
+        """Initialize state descriptors for RocksDB backend."""
+        # State for storing counts per window
+        self.window_counts_state = runtime_context.get_map_state(
+            ValueStateDescriptor("window_counts", FlinkTypes.PICKLED_BYTE_ARRAY())
         )
-        self.authors_state = runtime_context.get_state(
-            ValueStateDescriptor("unique_authors", FlinkTypes.PICKLED_BYTE_ARRAY())
+        
+        # State for storing unique authors per window
+        self.window_authors_state = runtime_context.get_map_state(
+            ValueStateDescriptor("window_authors", FlinkTypes.PICKLED_BYTE_ARRAY())
+        )
+        
+        # State for cleanup timers
+        self.cleanup_timer_state = runtime_context.get_value_state(
+            ValueStateDescriptor("cleanup_timer", FlinkTypes.PICKLED_BYTE_ARRAY())
         )
     
     def process_element(self, value: Tuple[str, PostData], ctx, out):
         """
-        Process each keyword-post pair and maintain aggregated counts.
+        Process each keyword-post pair and maintain sliding window aggregations.
+        
+        Args:
+            value: Tuple of (keyword, post)
+            ctx: Processing context with timestamp and timer service
+            out: Output collector for emitting windowed counts
+        """
+        keyword, post = value
+        event_time = ctx.timestamp()
+        
+        # Calculate which windows this event belongs to
+        windows = self._get_windows_for_timestamp(event_time)
+        
+        for window_start, window_end in windows:
+            window_key = f"{window_start}_{window_end}"
+            
+            # Update count for this window
+            current_count = self.window_counts_state.get(window_key)
+            if current_count is None:
+                current_count = 0
+            current_count += 1
+            self.window_counts_state.put(window_key, current_count)
+            
+            # Update unique authors for this window
+            authors_set = self.window_authors_state.get(window_key)
+            if authors_set is None:
+                authors_set = set()
+            authors_set.add(post.author_did)
+            self.window_authors_state.put(window_key, authors_set)
+            
+            # Create windowed keyword count
+            windowed_count = WindowedKeywordCount(
+                keyword=keyword,
+                count=current_count,
+                window_start=datetime.fromtimestamp(window_start / 1000),
+                window_end=datetime.fromtimestamp(window_end / 1000),
+                unique_authors=len(authors_set),
+                normalized_keyword=self._normalize_keyword(keyword)
+            )
+            
+            # Emit the windowed count
+            out.collect(windowed_count)
+            
+            # Register cleanup timer for window expiration
+            cleanup_time = window_end + 1000  # 1 second after window ends
+            ctx.timer_service().register_event_time_timer(cleanup_time)
+    
+    def on_timer(self, timestamp: int, ctx, out):
+        """
+        Handle timer events for window cleanup.
+        
+        Args:
+            timestamp: Timer timestamp
+            ctx: Processing context
+            out: Output collector
+        """
+        # Clean up expired windows
+        current_time = ctx.timestamp()
+        expired_windows = []
+        
+        # Find windows that have expired
+        for window_key in self.window_counts_state.keys():
+            window_start, window_end = map(int, window_key.split('_'))
+            if window_end <= current_time - self.window_size_ms:
+                expired_windows.append(window_key)
+        
+        # Remove expired windows from state
+        for window_key in expired_windows:
+            self.window_counts_state.remove(window_key)
+            self.window_authors_state.remove(window_key)
+    
+    def _get_windows_for_timestamp(self, timestamp: int) -> List[Tuple[int, int]]:
+        """
+        Calculate which sliding windows contain the given timestamp.
+        
+        Args:
+            timestamp: Event timestamp in milliseconds
+            
+        Returns:
+            List of (window_start, window_end) tuples in milliseconds
+        """
+        windows = []
+        
+        # Find the most recent window boundary that is <= timestamp
+        # Align to slide interval boundaries
+        latest_window_end = ((timestamp // self.slide_interval_ms) + 1) * self.slide_interval_ms
+        
+        # Generate windows that contain this timestamp
+        # A window contains the timestamp if: window_start <= timestamp < window_end
+        window_end = latest_window_end
+        while window_end - self.window_size_ms <= timestamp:
+            window_start = window_end - self.window_size_ms
+            if window_start <= timestamp < window_end:
+                windows.append((window_start, window_end))
+            window_end += self.slide_interval_ms
+            
+            # Prevent infinite loop - only look at reasonable number of future windows
+            if len(windows) > 20:
+                break
+        
+        return windows
+    
+    def _normalize_keyword(self, keyword: str) -> str:
+        """
+        Normalize keyword for consistent matching.
+        
+        Args:
+            keyword: Original keyword
+            
+        Returns:
+            Normalized keyword (lowercase, trimmed)
+        """
+        return keyword.lower().strip()
+
+
+class WindowedCountAggregator(KeyedProcessFunction):
+    """
+    Alternative implementation using explicit window management for better control.
+    
+    This aggregator maintains a more explicit sliding window implementation
+    with configurable window parameters and efficient state management.
+    """
+    
+    def __init__(self, window_size_minutes: int = 10, slide_interval_minutes: int = 1):
+        """
+        Initialize the windowed count aggregator.
+        
+        Args:
+            window_size_minutes: Size of each window in minutes
+            slide_interval_minutes: How often to slide the window in minutes
+        """
+        self.window_size_minutes = window_size_minutes
+        self.slide_interval_minutes = slide_interval_minutes
+        self.window_size_ms = window_size_minutes * 60 * 1000
+        self.slide_interval_ms = slide_interval_minutes * 60 * 1000
+        
+        # State for window data
+        self.events_state = None
+        self.last_cleanup_state = None
+    
+    def open(self, runtime_context):
+        """Initialize state for window management."""
+        # Store events with their timestamps for window calculations
+        self.events_state = runtime_context.get_list_state(
+            ValueStateDescriptor("window_events", FlinkTypes.PICKLED_BYTE_ARRAY())
+        )
+        
+        # Track last cleanup time
+        self.last_cleanup_state = runtime_context.get_value_state(
+            ValueStateDescriptor("last_cleanup", FlinkTypes.PICKLED_BYTE_ARRAY())
+        )
+    
+    def process_element(self, value: Tuple[str, PostData], ctx, out):
+        """
+        Process keyword-post pairs with sliding window logic.
         
         Args:
             value: Tuple of (keyword, post)
@@ -302,42 +582,104 @@ class KeywordAggregator(KeyedProcessFunction):
             out: Output collector
         """
         keyword, post = value
+        event_time = ctx.timestamp()
         
-        # Get current count
-        current_count = self.count_state.value()
-        if current_count is None:
-            current_count = 0
+        # Add new event to state
+        event_data = {
+            'timestamp': event_time,
+            'author_did': post.author_did,
+            'post_uri': post.uri
+        }
+        self.events_state.add(event_data)
         
-        # Get current authors set
-        authors_set = self.authors_state.value()
-        if authors_set is None:
-            authors_set = set()
+        # Clean up old events periodically
+        self._cleanup_old_events(event_time)
         
-        # Update count and authors
-        current_count += 1
-        authors_set.add(post.author_did)
+        # Calculate current window statistics
+        window_stats = self._calculate_window_stats(event_time)
         
-        # Update state
-        self.count_state.update(current_count)
-        self.authors_state.update(authors_set)
+        # Emit windowed count for each active window
+        for window_start, window_end, count, unique_authors in window_stats:
+            windowed_count = WindowedKeywordCount(
+                keyword=keyword,
+                count=count,
+                window_start=datetime.fromtimestamp(window_start / 1000),
+                window_end=datetime.fromtimestamp(window_end / 1000),
+                unique_authors=unique_authors,
+                normalized_keyword=self._normalize_keyword(keyword)
+            )
+            out.collect(windowed_count)
+    
+    def _cleanup_old_events(self, current_time: int) -> None:
+        """
+        Remove events that are outside all possible windows.
         
-        # Create windowed keyword count
-        window_start = datetime.fromtimestamp(ctx.timestamp() / 1000)
-        window_end = datetime.fromtimestamp(
-            (ctx.timestamp() + self.window_size_minutes * 60 * 1000) / 1000
-        )
+        Args:
+            current_time: Current event timestamp
+        """
+        last_cleanup = self.last_cleanup_state.value()
+        if last_cleanup is None:
+            last_cleanup = 0
         
-        windowed_count = WindowedKeywordCount(
-            keyword=keyword,
-            count=current_count,
-            window_start=window_start,
-            window_end=window_end,
-            unique_authors=len(authors_set),
-            normalized_keyword=keyword.lower()
-        )
+        # Only cleanup every slide interval to avoid excessive processing
+        if current_time - last_cleanup < self.slide_interval_ms:
+            return
         
-        # Emit the windowed count
-        out.collect(windowed_count)
+        cutoff_time = current_time - self.window_size_ms
+        events = list(self.events_state.get())
+        
+        # Filter out old events
+        recent_events = [
+            event for event in events 
+            if event['timestamp'] > cutoff_time
+        ]
+        
+        # Update state with filtered events
+        self.events_state.clear()
+        for event in recent_events:
+            self.events_state.add(event)
+        
+        self.last_cleanup_state.update(current_time)
+    
+    def _calculate_window_stats(self, current_time: int) -> List[Tuple[int, int, int, int]]:
+        """
+        Calculate statistics for all active windows.
+        
+        Args:
+            current_time: Current timestamp
+            
+        Returns:
+            List of (window_start, window_end, count, unique_authors) tuples
+        """
+        events = list(self.events_state.get())
+        window_stats = []
+        
+        # Calculate window boundaries
+        latest_window_start = current_time - (current_time % self.slide_interval_ms)
+        
+        # Generate statistics for each window
+        window_start = latest_window_start
+        while window_start > current_time - self.window_size_ms:
+            window_end = window_start + self.window_size_ms
+            
+            # Count events in this window
+            window_events = [
+                event for event in events
+                if window_start <= event['timestamp'] < window_end
+            ]
+            
+            if window_events:
+                count = len(window_events)
+                unique_authors = len(set(event['author_did'] for event in window_events))
+                window_stats.append((window_start, window_end, count, unique_authors))
+            
+            window_start -= self.slide_interval_ms
+        
+        return window_stats
+    
+    def _normalize_keyword(self, keyword: str) -> str:
+        """Normalize keyword for consistent processing."""
+        return keyword.lower().strip()
 
 
 class WindowedCountSerializer(MapFunction):
@@ -449,7 +791,7 @@ class FlinkStreamProcessor:
     
     def create_processing_pipeline(self, source_stream: DataStream) -> DataStream:
         """
-        Create the main processing pipeline for keyword extraction and aggregation.
+        Create the main processing pipeline for keyword extraction and sliding window aggregation.
         
         Args:
             source_stream: Input stream of raw Kafka messages
@@ -472,14 +814,21 @@ class FlinkStreamProcessor:
         # Key by keyword for parallel processing
         keyed_stream = keywords_stream.key_by(lambda x: x[0])
         
-        # Apply sliding window aggregation
+        # Apply sliding window aggregation with configurable parameters
         window_size_minutes = self.config.get('window_size_minutes', 10)
+        slide_interval_minutes = self.config.get('slide_interval_minutes', 1)
+        
+        # Use the sliding window aggregator for better window management
         windowed_counts = keyed_stream.process(
-            KeywordAggregator(window_size_minutes),
+            SlidingWindowAggregator(
+                window_size_minutes=window_size_minutes,
+                slide_interval_minutes=slide_interval_minutes
+            ),
             output_type=FlinkTypes.PICKLED_BYTE_ARRAY()
         )
         
-        logger.info(f"Processing pipeline created with {window_size_minutes}-minute windows")
+        logger.info(f"Processing pipeline created with {window_size_minutes}-minute sliding windows, "
+                   f"{slide_interval_minutes}-minute slide interval")
         
         return windowed_counts
     
@@ -545,10 +894,11 @@ def create_flink_job_config(
     minio_secret_key: str = "minioadmin123",
     parallelism: int = 2,
     checkpoint_interval_ms: int = 60000,
-    window_size_minutes: int = 10
+    window_size_minutes: int = 10,
+    slide_interval_minutes: int = 1
 ) -> Dict[str, Any]:
     """
-    Create configuration dictionary for Flink job.
+    Create configuration dictionary for Flink job with sliding window parameters.
     
     Args:
         kafka_bootstrap_servers: Kafka bootstrap servers
@@ -561,6 +911,7 @@ def create_flink_job_config(
         parallelism: Flink job parallelism
         checkpoint_interval_ms: Checkpointing interval in milliseconds
         window_size_minutes: Window size for aggregation in minutes
+        slide_interval_minutes: Slide interval for windows in minutes
         
     Returns:
         Configuration dictionary
@@ -575,7 +926,8 @@ def create_flink_job_config(
         'minio_secret_key': minio_secret_key,
         'parallelism': parallelism,
         'checkpoint_interval_ms': checkpoint_interval_ms,
-        'window_size_minutes': window_size_minutes
+        'window_size_minutes': window_size_minutes,
+        'slide_interval_minutes': slide_interval_minutes
     }
 
 
