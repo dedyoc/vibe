@@ -1,0 +1,61 @@
+# Development overrides for Docker Compose
+# This file is automatically loaded by docker-compose and provides
+# development-specific configurations
+
+services:
+  # Development overrides for application services
+  bluesky-producer:
+    volumes:
+      # Mount source code for hot reloading during development
+      - ./services/bluesky-producer:/app:ro
+      - ./shared:/app/shared:ro
+    environment:
+      # Development-specific environment variables
+      LOG_LEVEL: DEBUG
+      PYTHONPATH: /app:/app/shared
+    # Remove restart policy for easier debugging
+    restart: "no"
+
+  trend-processor:
+    volumes:
+      # Mount source code for hot reloading during development
+      - ./services/trend-processor:/app:ro
+      - ./shared:/app/shared:ro
+    environment:
+      # Development-specific environment variables
+      LOG_LEVEL: DEBUG
+      PYTHONPATH: /app:/app/shared
+    # Remove restart policy for easier debugging
+    restart: "no"
+
+  # Development tools and utilities
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9101
+    networks:
+      - streaming-network
+    depends_on:
+      - kafka
+    profiles:
+      - dev-tools
+
+  # Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    networks:
+      - streaming-network
+    depends_on:
+      - redis
+    profiles:
+      - dev-tools

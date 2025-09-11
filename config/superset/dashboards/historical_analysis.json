@@ -1,0 +1,146 @@
+{
+  "dashboard_title": "Historical Trend Analysis",
+  "description": "Historical analysis of trending patterns and keyword evolution over time",
+  "slug": "historical-trend-analysis",
+  "published": true,
+  "json_metadata": {
+    "refresh_frequency": 300,
+    "timed_refresh_immune_slices": [],
+    "expanded_slices": {},
+    "label_colors": {
+      "daily": "#FF6B6B",
+      "weekly": "#4ECDC4",
+      "monthly": "#45B7D1"
+    },
+    "color_scheme": "supersetColors",
+    "positions": {
+      "CHART-daily-trends": {
+        "children": [],
+        "id": "CHART-daily-trends",
+        "meta": {
+          "chartId": 4,
+          "height": 50,
+          "sliceName": "Daily Trend Patterns",
+          "width": 12
+        },
+        "type": "CHART"
+      },
+      "CHART-keyword-evolution": {
+        "children": [],
+        "id": "CHART-keyword-evolution",
+        "meta": {
+          "chartId": 5,
+          "height": 50,
+          "sliceName": "Keyword Evolution Timeline",
+          "width": 8
+        },
+        "type": "CHART"
+      },
+      "CHART-trend-distribution": {
+        "children": [],
+        "id": "CHART-trend-distribution",
+        "meta": {
+          "chartId": 6,
+          "height": 50,
+          "sliceName": "Trend Frequency Distribution",
+          "width": 4
+        },
+        "type": "CHART"
+      },
+      "CHART-top-keywords-weekly": {
+        "children": [],
+        "id": "CHART-top-keywords-weekly",
+        "meta": {
+          "chartId": 7,
+          "height": 50,
+          "sliceName": "Top Keywords This Week",
+          "width": 6
+        },
+        "type": "CHART"
+      },
+      "CHART-growth-patterns": {
+        "children": [],
+        "id": "CHART-growth-patterns",
+        "meta": {
+          "chartId": 8,
+          "height": 50,
+          "sliceName": "Growth Pattern Analysis",
+          "width": 6
+        },
+        "type": "CHART"
+      }
+    },
+    "default_filters": {
+      "trend_date": {
+        "operator": "TEMPORAL_RANGE",
+        "value": "Last week"
+      }
+    },
+    "filter_scopes": {},
+    "chart_configuration": {
+      "daily-trends": {
+        "viz_type": "line",
+        "datasource": "historical_trend_patterns",
+        "x_axis_label": "Date",
+        "y_axis_label": "Average Frequency",
+        "groupby": ["keyword"],
+        "metrics": ["avg_frequency"],
+        "timeseries_limit_metric": "avg_frequency",
+        "order_desc": true,
+        "rolling_type": "mean",
+        "rolling_periods": 3,
+        "time_range": "Last 7 days",
+        "granularity_sqla": "trend_date",
+        "resample_rule": "1D",
+        "resample_method": "mean"
+      },
+      "keyword-evolution": {
+        "viz_type": "area",
+        "datasource": "historical_trend_patterns",
+        "x_axis_label": "Date",
+        "y_axis_label": "Trend Occurrences",
+        "groupby": ["keyword"],
+        "metrics": ["trend_occurrences"],
+        "order_desc": true,
+        "contribution": false,
+        "stacked_style": "stack",
+        "time_range": "Last 30 days",
+        "granularity_sqla": "trend_date"
+      },
+      "trend-distribution": {
+        "viz_type": "pie",
+        "datasource": "historical_trend_patterns",
+        "groupby": ["keyword"],
+        "metrics": ["trend_occurrences"],
+        "row_limit": 10,
+        "pie_label_type": "key_percent",
+        "donut": true,
+        "show_legend": true,
+        "legend_position": "right"
+      },
+      "top-keywords-weekly": {
+        "viz_type": "bar",
+        "datasource": "historical_trend_patterns",
+        "x_axis_label": "Keywords",
+        "y_axis_label": "Max Growth Rate",
+        "groupby": ["keyword"],
+        "metrics": ["max_growth_rate"],
+        "row_limit": 15,
+        "order_desc": true,
+        "rich_tooltip": true,
+        "show_bar_value": true
+      },
+      "growth-patterns": {
+        "viz_type": "box_plot",
+        "datasource": "historical_trend_patterns",
+        "groupby": ["keyword"],
+        "metrics": ["max_growth_rate"],
+        "whisker_options": "Tukey",
+        "row_limit": 20,
+        "order_desc": true
+      }
+    }
+  },
+  "css": ".dashboard-content { background-color: #f8f9fa; } .chart-container { border-radius: 8px; }",
+  "owners": [1]
+}

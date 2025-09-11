@@ -1,0 +1,99 @@
+{
+  "dashboard_title": "Real-time Trending Topics",
+  "description": "Live view of trending keywords and topics from Bluesky firehose",
+  "slug": "realtime-trending-topics",
+  "published": true,
+  "json_metadata": {
+    "refresh_frequency": 30,
+    "timed_refresh_immune_slices": [],
+    "expanded_slices": {},
+    "label_colors": {
+      "trending": "#FF6B6B",
+      "emerging": "#4ECDC4", 
+      "stable": "#45B7D1",
+      "declining": "#96CEB4"
+    },
+    "color_scheme": "supersetColors",
+    "positions": {
+      "CHART-trending-keywords-table": {
+        "children": [],
+        "id": "CHART-trending-keywords-table",
+        "meta": {
+          "chartId": 1,
+          "height": 50,
+          "sliceName": "Top Trending Keywords",
+          "width": 6
+        },
+        "type": "CHART"
+      },
+      "CHART-trending-growth-chart": {
+        "children": [],
+        "id": "CHART-trending-growth-chart", 
+        "meta": {
+          "chartId": 2,
+          "height": 50,
+          "sliceName": "Trend Growth Rates",
+          "width": 6
+        },
+        "type": "CHART"
+      },
+      "CHART-keyword-frequency-heatmap": {
+        "children": [],
+        "id": "CHART-keyword-frequency-heatmap",
+        "meta": {
+          "chartId": 3,
+          "height": 50,
+          "sliceName": "Keyword Frequency Heatmap",
+          "width": 12
+        },
+        "type": "CHART"
+      }
+    },
+    "default_filters": {},
+    "filter_scopes": {},
+    "chart_configuration": {
+      "trending-keywords-table": {
+        "viz_type": "table",
+        "datasource": "current_trending_keywords",
+        "groupby": ["keyword", "frequency", "growth_rate", "confidence_score", "unique_authors", "rank"],
+        "metrics": [],
+        "row_limit": 20,
+        "order_desc": true,
+        "orderby": [["rank", true]],
+        "table_timestamp_format": "%Y-%m-%d %H:%M:%S",
+        "page_length": 20,
+        "include_search": true,
+        "table_filter": true,
+        "align_pn": false,
+        "color_pn": true
+      },
+      "trending-growth-chart": {
+        "viz_type": "line",
+        "datasource": "current_trending_keywords",
+        "x_axis_label": "Time Window",
+        "y_axis_label": "Growth Rate",
+        "groupby": ["keyword"],
+        "metrics": ["growth_rate"],
+        "timeseries_limit_metric": "growth_rate",
+        "order_desc": true,
+        "rolling_type": "None",
+        "time_range": "Last hour",
+        "granularity_sqla": "window_start"
+      },
+      "keyword-frequency-heatmap": {
+        "viz_type": "heatmap",
+        "datasource": "current_trending_keywords", 
+        "all_columns_x": "keyword",
+        "all_columns_y": "window_start",
+        "metric": "frequency",
+        "linear_color_scheme": "blue_white_yellow",
+        "xscale_interval": 1,
+        "yscale_interval": 1,
+        "canvas_image_rendering": "pixelated",
+        "normalize_across": "heatmap"
+      }
+    }
+  },
+  "css": ".dashboard-content { background-color: #f8f9fa; }",
+  "owners": [1]
+}

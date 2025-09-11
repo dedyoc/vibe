@@ -8,21 +8,21 @@ services:
       - "9101:9101"
     environment:
       KAFKA_NODE_ID: 1
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
       KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
       KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
       KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
-      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
-      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       KAFKA_JMX_PORT: 9101
       KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
     volumes:
       - kafka_data:/tmp/kraft-combined-logs
     healthcheck:
@@ -112,12 +112,6 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     networks:
       - streaming-network
 
@@ -126,10 +120,10 @@ services:
     image: minio/mc:RELEASE.2023-11-20T16-30-59Z
     container_name: minio-init
     depends_on:
-      minio:
-        condition: service_healthy
+      - minio
     entrypoint: >
       /bin/sh -c "
+      sleep 10;
       mc alias set minio http://minio:9000 minioadmin minioadmin123;
       mc mb minio/data-lake --ignore-existing;
       mc mb minio/flink-checkpoints --ignore-existing;
@@ -209,6 +203,35 @@ services:
     depends_on:
       - prometheus
 
+  # Business Intelligence - Apache Superset
+  superset:
+    build:
+      context: ./config/superset
+      dockerfile: Dockerfile
+    container_name: superset
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      SUPERSET_HOME: /app/superset_home
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SUPERSET_SECRET_KEY: bluesky-streaming-pipeline-secret-key-change-in-production
+    volumes:
+      - superset_data:/app/superset_home
+      - ./config/superset/dashboards:/app/dashboards:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - streaming-network
+    depends_on:
+      - redis
+      - minio
+
   # Application Services
   bluesky-producer:
     build:
@@ -224,9 +247,6 @@ services:
       PROMETHEUS_PORT: 8000
     ports:
       - "8000:8000"  # Prometheus metrics endpoint
-    volumes:
-      - ./services/bluesky-producer:/app
-      - ./shared:/app/shared
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -263,9 +283,6 @@ services:
       PROMETHEUS_PORT: 8001
     ports:
       - "8001:8001"  # Prometheus metrics endpoint
-    volumes:
-      - ./services/trend-processor:/app
-      - ./shared:/app/shared
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -285,6 +302,36 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  superset-integration:
+    build:
+      context: .
+      dockerfile: services/superset-integration/Dockerfile
+    container_name: superset-integration
+    environment:
+      SUPERSET_URL: http://superset:8088
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      LOG_LEVEL: INFO
+      PROMETHEUS_PORT: 8002
+    ports:
+      - "8002:8002"  # Prometheus metrics endpoint
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - streaming-network
+    depends_on:
+      - superset
+      - redis
+      - minio
+    restart: unless-stopped
+
 # Persistent volumes for data storage
 volumes:
   kafka_data:
@@ -301,6 +348,8 @@ volumes:
     driver: local
   grafana_data:
     driver: local
+  superset_data:
+    driver: local
 
 # Network for service communication
 networks:
@@ -308,4 +357,4 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/16
+        - subnet: 192.168.100.0/24
