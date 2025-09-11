@@ -20,6 +20,10 @@ A real-time streaming data pipeline that ingests social media posts from Bluesky
 - **ATProto** - Bluesky firehose connection
 - **Apache Kafka** - Message streaming platform
 - **Apache Flink** - Stream processing engine
+- **Apache Superset** - Business intelligence and data visualization
+- **Redis** - Caching layer for real-time data
+- **MinIO** - S3-compatible object storage for data lake
+- **Prometheus & Grafana** - Monitoring and observability
 - **Docker Compose** - Local development environment
 - **Ruff** - Code linting and formatting
 
@@ -60,8 +64,39 @@ The system follows an event-driven architecture with:
 1. **Data Ingestion**: Bluesky firehose → Kafka topics
 2. **Stream Processing**: Flink jobs for windowed aggregations
 3. **Trend Detection**: Statistical analysis for trending keywords
-4. **Storage**: Data lake and caching layers
-5. **Monitoring**: Comprehensive observability stack
+4. **Storage**: Data lake (MinIO) and caching layers (Redis)
+5. **Business Intelligence**: Apache Superset for dashboards and reporting
+6. **Monitoring**: Comprehensive observability stack (Prometheus/Grafana)
+
+## Services
+
+### Core Processing Services
+- **bluesky-producer**: Connects to Bluesky firehose and publishes to Kafka
+- **trend-processor**: Flink-based stream processing for trend detection
+- **cache-layer**: Redis caching service for real-time data
+- **data-lake**: MinIO-based object storage for historical data
+
+### Business Intelligence
+- **superset**: Apache Superset for data visualization and dashboards
+- **superset-integration**: Service managing Superset data sources and sync
+
+### Infrastructure Services
+- **kafka**: Message streaming platform (KRaft mode)
+- **flink-jobmanager/taskmanager**: Stream processing engine
+- **redis**: In-memory caching and real-time data store
+- **minio**: S3-compatible object storage
+- **prometheus**: Metrics collection and monitoring
+- **grafana**: Visualization and alerting for system metrics
+
+## Web Interfaces
+
+When running the full stack:
+
+- **Superset Dashboards**: http://localhost:8088 (admin/admin123)
+- **Grafana Monitoring**: http://localhost:3000 (admin/admin123)
+- **Flink Web UI**: http://localhost:8081
+- **MinIO Console**: http://localhost:9001 (minioadmin/minioadmin123)
+- **Prometheus**: http://localhost:9090
 
 ## Getting Started
 
