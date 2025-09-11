@@ -251,6 +251,7 @@ ValueStateDescriptor = MockValueStateDescriptor
 FlinkTypes = MockTypes
 
 from shared.models import PostData, WindowedKeywordCount, TrendAlert
+from trend_detector import TrendDetector, TrendDetectionConfig, create_trend_detection_config
 
 # Configure logging
 logging.basicConfig(
@@ -705,6 +706,113 @@ class WindowedCountSerializer(MapFunction):
         })
 
 
+class TrendAlertSerializer(MapFunction):
+    """Serializes TrendAlert objects to JSON for Kafka output."""
+    
+    def map(self, trend_alert: TrendAlert) -> str:
+        """
+        Convert TrendAlert to JSON string.
+        
+        Args:
+            trend_alert: TrendAlert object
+            
+        Returns:
+            JSON string representation
+        """
+        return json.dumps({
+            'keyword': trend_alert.keyword,
+            'frequency': trend_alert.frequency,
+            'growth_rate': trend_alert.growth_rate,
+            'confidence_score': trend_alert.confidence_score,
+            'window_start': trend_alert.window_start.isoformat(),
+            'window_end': trend_alert.window_end.isoformat(),
+            'sample_posts': trend_alert.sample_posts,
+            'unique_authors': trend_alert.unique_authors,
+            'rank': trend_alert.rank
+        })
+
+
+class TrendDetectionFunction(KeyedProcessFunction):
+    """
+    Flink process function that integrates trend detection algorithm.
+    
+    This function collects windowed keyword counts and applies statistical
+    trend detection to identify trending topics in real-time.
+    """
+    
+    def __init__(self, trend_config: Optional[TrendDetectionConfig] = None):
+        """
+        Initialize trend detection function.
+        
+        Args:
+            trend_config: Configuration for trend detection algorithm
+        """
+        self.trend_config = trend_config or create_trend_detection_config()
+        self.trend_detector = None
+        self.windowed_counts_buffer = None
+        self.last_detection_time = None
+        self.detection_interval_ms = 30000  # Run trend detection every 30 seconds
+        
+    def open(self, runtime_context):
+        """Initialize trend detector and state."""
+        self.trend_detector = TrendDetector(self.trend_config)
+        
+        # State for buffering windowed counts
+        self.windowed_counts_buffer = runtime_context.get_list_state(
+            ValueStateDescriptor("windowed_counts_buffer", FlinkTypes.PICKLED_BYTE_ARRAY())
+        )
+        
+        # State for tracking last detection time
+        self.last_detection_time = runtime_context.get_value_state(
+            ValueStateDescriptor("last_detection_time", FlinkTypes.PICKLED_BYTE_ARRAY())
+        )
+        
+        logger.info("TrendDetectionFunction initialized with trend detection algorithm")
+    
+    def process_element(self, value: WindowedKeywordCount, ctx, out):
+        """
+        Process windowed keyword counts and detect trends periodically.
+        
+        Args:
+            value: WindowedKeywordCount from sliding window aggregation
+            ctx: Processing context
+            out: Output collector for trend alerts
+        """
+        current_time = ctx.timestamp()
+        
+        # Add windowed count to buffer
+        self.windowed_counts_buffer.add(value)
+        
+        # Check if it's time to run trend detection
+        last_detection = self.last_detection_time.value()
+        if (last_detection is None or 
+            current_time - last_detection >= self.detection_interval_ms):
+            
+            # Get all buffered counts
+            buffered_counts = list(self.windowed_counts_buffer.get())
+            
+            if buffered_counts:
+                # Run trend detection
+                trends = self.trend_detector.process_windowed_counts(buffered_counts)
+                
+                # Emit trend alerts
+                for trend in trends:
+                    out.collect(trend)
+                    logger.debug(f"Emitted trend alert: {trend.keyword} (rank={trend.rank})")
+                
+                # Clear buffer and update detection time
+                self.windowed_counts_buffer.clear()
+                self.last_detection_time.update(current_time)
+                
+                logger.info(f"Trend detection completed: {len(trends)} trends detected from "
+                           f"{len(buffered_counts)} windowed counts")
+    
+    def on_timer(self, timestamp: int, ctx, out):
+        """Handle timer events for periodic trend detection."""
+        # This could be used for additional periodic cleanup or detection
+        pass
+
+
 class FlinkStreamProcessor:
     """Main Flink stream processing job for trend detection."""
     
@@ -789,15 +897,15 @@ class FlinkStreamProcessor:
         
         return source_stream
     
-    def create_processing_pipeline(self, source_stream: DataStream) -> DataStream:
+    def create_processing_pipeline(self, source_stream: DataStream) -> Tuple[DataStream, DataStream]:
         """
-        Create the main processing pipeline for keyword extraction and sliding window aggregation.
+        Create the main processing pipeline for keyword extraction, sliding window aggregation, and trend detection.
         
         Args:
             source_stream: Input stream of raw Kafka messages
             
         Returns:
-            DataStream of WindowedKeywordCount objects
+            Tuple of (windowed_counts_stream, trend_alerts_stream)
         """
         # Deserialize posts from JSON
         posts_stream = source_stream.map(
@@ -827,41 +935,78 @@ class FlinkStreamProcessor:
             output_type=FlinkTypes.PICKLED_BYTE_ARRAY()
         )
         
-        logger.info(f"Processing pipeline created with {window_size_minutes}-minute sliding windows, "
-                   f"{slide_interval_minutes}-minute slide interval")
+        # Apply trend detection algorithm
+        trend_detection_config = create_trend_detection_config(
+            min_frequency=self.config.get('trend_min_frequency', 5),
+            min_unique_authors=self.config.get('trend_min_unique_authors', 2),
+            min_z_score=self.config.get('trend_min_z_score', 2.0),
+            min_growth_rate=self.config.get('trend_min_growth_rate', 50.0),
+            max_trends=self.config.get('trend_max_trends', 50)
+        )
         
-        return windowed_counts
+        # Key windowed counts by normalized keyword for trend detection
+        keyed_windowed_counts = windowed_counts.key_by(lambda wc: wc.normalized_keyword)
+        
+        # Apply trend detection function
+        trend_alerts = keyed_windowed_counts.process(
+            TrendDetectionFunction(trend_detection_config),
+            output_type=FlinkTypes.PICKLED_BYTE_ARRAY()
+        )
+        
+        logger.info(f"Processing pipeline created with {window_size_minutes}-minute sliding windows, "
+                   f"{slide_interval_minutes}-minute slide interval, and trend detection")
+        
+        return windowed_counts, trend_alerts
     
-    def create_output_sinks(self, processed_stream: DataStream) -> None:
+    def create_output_sinks(self, windowed_counts_stream: DataStream, trend_alerts_stream: DataStream) -> None:
         """
         Create output sinks for processed data.
         
         Args:
-            processed_stream: Stream of WindowedKeywordCount objects
+            windowed_counts_stream: Stream of WindowedKeywordCount objects
+            trend_alerts_stream: Stream of TrendAlert objects
         """
-        # Serialize for Kafka output
-        serialized_stream = processed_stream.map(
+        # Serialize windowed counts for Kafka output
+        serialized_counts = windowed_counts_stream.map(
             WindowedCountSerializer(),
             output_type=FlinkTypes.STRING()
         )
         
-        # Kafka sink for trend alerts
+        # Serialize trend alerts for Kafka output
+        serialized_alerts = trend_alerts_stream.map(
+            TrendAlertSerializer(),
+            output_type=FlinkTypes.STRING()
+        )
+        
+        # Kafka producer configuration
         kafka_props = {
             'bootstrap.servers': self.config.get('kafka_bootstrap_servers', 'kafka:29092'),
         }
         
-        kafka_producer = FlinkKafkaProducer(
-            topic=self.config.get('kafka_topic_trends', 'windowed-keyword-counts'),
+        # Kafka sink for windowed keyword counts
+        windowed_counts_producer = FlinkKafkaProducer(
+            topic=self.config.get('kafka_topic_windowed_counts', 'windowed-keyword-counts'),
             serialization_schema=SimpleStringSchema(),
             producer_config=kafka_props
         )
         
-        serialized_stream.add_sink(kafka_producer)
+        # Kafka sink for trend alerts
+        trend_alerts_producer = FlinkKafkaProducer(
+            topic=self.config.get('kafka_topic_trend_alerts', 'trend-alerts'),
+            serialization_schema=SimpleStringSchema(),
+            producer_config=kafka_props
+        )
         
-        logger.info(f"Output sink created for topic: {self.config.get('kafka_topic_trends', 'windowed-keyword-counts')}")
+        # Add sinks to streams
+        serialized_counts.add_sink(windowed_counts_producer)
+        serialized_alerts.add_sink(trend_alerts_producer)
+        
+        logger.info(f"Output sinks created for windowed counts and trend alerts")
+        logger.info(f"Windowed counts topic: {self.config.get('kafka_topic_windowed_counts', 'windowed-keyword-counts')}")
+        logger.info(f"Trend alerts topic: {self.config.get('kafka_topic_trend_alerts', 'trend-alerts')}")
     
     def run_job(self) -> None:
-        """Execute the complete Flink streaming job."""
+        """Execute the complete Flink streaming job with trend detection."""
         try:
             # Setup environment
             env = self.setup_environment()
@@ -869,14 +1014,14 @@ class FlinkStreamProcessor:
             # Create source
             source_stream = self.create_kafka_source()
             
-            # Create processing pipeline
-            processed_stream = self.create_processing_pipeline(source_stream)
+            # Create processing pipeline (returns both windowed counts and trend alerts)
+            windowed_counts_stream, trend_alerts_stream = self.create_processing_pipeline(source_stream)
             
-            # Create output sinks
-            self.create_output_sinks(processed_stream)
+            # Create output sinks for both streams
+            self.create_output_sinks(windowed_counts_stream, trend_alerts_stream)
             
             # Execute the job
-            logger.info("Starting Flink streaming job...")
+            logger.info("Starting Flink streaming job with trend detection...")
             env.execute("Bluesky Trend Detection Job")
             
         except Exception as e:
@@ -887,7 +1032,8 @@ class FlinkStreamProcessor:
 def create_flink_job_config(
     kafka_bootstrap_servers: str = "kafka:29092",
     kafka_topic_posts: str = "bluesky-posts",
-    kafka_topic_trends: str = "windowed-keyword-counts",
+    kafka_topic_windowed_counts: str = "windowed-keyword-counts",
+    kafka_topic_trend_alerts: str = "trend-alerts",
     kafka_consumer_group: str = "trend-processor",
     minio_endpoint: str = "http://minio:9000",
     minio_access_key: str = "minioadmin",
@@ -895,15 +1041,21 @@ def create_flink_job_config(
     parallelism: int = 2,
     checkpoint_interval_ms: int = 60000,
     window_size_minutes: int = 10,
-    slide_interval_minutes: int = 1
+    slide_interval_minutes: int = 1,
+    trend_min_frequency: int = 5,
+    trend_min_unique_authors: int = 2,
+    trend_min_z_score: float = 2.0,
+    trend_min_growth_rate: float = 50.0,
+    trend_max_trends: int = 50
 ) -> Dict[str, Any]:
     """
-    Create configuration dictionary for Flink job with sliding window parameters.
+    Create configuration dictionary for Flink job with sliding window and trend detection parameters.
     
     Args:
         kafka_bootstrap_servers: Kafka bootstrap servers
         kafka_topic_posts: Input topic for posts
-        kafka_topic_trends: Output topic for trends
+        kafka_topic_windowed_counts: Output topic for windowed keyword counts
+        kafka_topic_trend_alerts: Output topic for trend alerts
         kafka_consumer_group: Consumer group ID
         minio_endpoint: MinIO endpoint URL
         minio_access_key: MinIO access key
@@ -912,6 +1064,11 @@ def create_flink_job_config(
         checkpoint_interval_ms: Checkpointing interval in milliseconds
         window_size_minutes: Window size for aggregation in minutes
         slide_interval_minutes: Slide interval for windows in minutes
+        trend_min_frequency: Minimum frequency threshold for trend detection
+        trend_min_unique_authors: Minimum unique authors threshold for trend detection
+        trend_min_z_score: Minimum z-score threshold for statistical significance
+        trend_min_growth_rate: Minimum growth rate percentage for trend detection
+        trend_max_trends: Maximum number of trends to track and rank
         
     Returns:
         Configuration dictionary
@@ -919,7 +1076,8 @@ def create_flink_job_config(
     return {
         'kafka_bootstrap_servers': kafka_bootstrap_servers,
         'kafka_topic_posts': kafka_topic_posts,
-        'kafka_topic_trends': kafka_topic_trends,
+        'kafka_topic_windowed_counts': kafka_topic_windowed_counts,
+        'kafka_topic_trend_alerts': kafka_topic_trend_alerts,
         'kafka_consumer_group': kafka_consumer_group,
         'minio_endpoint': minio_endpoint,
         'minio_access_key': minio_access_key,
@@ -927,7 +1085,12 @@ def create_flink_job_config(
         'parallelism': parallelism,
         'checkpoint_interval_ms': checkpoint_interval_ms,
         'window_size_minutes': window_size_minutes,
-        'slide_interval_minutes': slide_interval_minutes
+        'slide_interval_minutes': slide_interval_minutes,
+        'trend_min_frequency': trend_min_frequency,
+        'trend_min_unique_authors': trend_min_unique_authors,
+        'trend_min_z_score': trend_min_z_score,
+        'trend_min_growth_rate': trend_min_growth_rate,
+        'trend_max_trends': trend_max_trends
     }
 
 

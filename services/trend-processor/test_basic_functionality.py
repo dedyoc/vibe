@@ -309,14 +309,16 @@ class TestFlinkJobConfiguration:
         config = create_flink_job_config(
             kafka_bootstrap_servers="test-kafka:9092",
             kafka_topic_posts="test-posts",
-            kafka_topic_trends="test-trends",
+            kafka_topic_windowed_counts="test-windowed-counts",
+            kafka_topic_trend_alerts="test-trend-alerts",
             parallelism=4,
             window_size_minutes=5
         )
         
         assert config['kafka_bootstrap_servers'] == "test-kafka:9092"
         assert config['kafka_topic_posts'] == "test-posts"
-        assert config['kafka_topic_trends'] == "test-trends"
+        assert config['kafka_topic_windowed_counts'] == "test-windowed-counts"
+        assert config['kafka_topic_trend_alerts'] == "test-trend-alerts"
         assert config['parallelism'] == 4
         assert config['window_size_minutes'] == 5
         assert config['minio_endpoint'] == "http://minio:9000"
@@ -330,7 +332,8 @@ class TestFlinkJobConfiguration:
         
         assert config['kafka_bootstrap_servers'] == "kafka:29092"
         assert config['kafka_topic_posts'] == "bluesky-posts"
-        assert config['kafka_topic_trends'] == "windowed-keyword-counts"
+        assert config['kafka_topic_windowed_counts'] == "windowed-keyword-counts"
+        assert config['kafka_topic_trend_alerts'] == "trend-alerts"
         assert config['parallelism'] == 2
         assert config['window_size_minutes'] == 10
 
