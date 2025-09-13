@@ -16,6 +16,11 @@ from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_
 from starlette.responses import Response
 import uvicorn
 
+import sys
+import os
+sys.path.append(os.path.dirname(__file__))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
 from flink_manager import FlinkJobManager, FlinkJobDeployer
 from flink_job import create_flink_job_config
 
@@ -165,7 +170,8 @@ async def initialize_flink_integration() -> None:
         flink_config = create_flink_job_config(
             kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092"),
             kafka_topic_posts=os.getenv("KAFKA_TOPIC_POSTS", "bluesky-posts"),
-            kafka_topic_trends=os.getenv("KAFKA_TOPIC_TRENDS", "windowed-keyword-counts"),
+            kafka_topic_windowed_counts=os.getenv("KAFKA_TOPIC_WINDOWED_COUNTS", "windowed-keyword-counts"),
+            kafka_topic_trend_alerts=os.getenv("KAFKA_TOPIC_TREND_ALERTS", "trend-alerts"),
             minio_endpoint=f"http://{os.getenv('MINIO_ENDPOINT', 'minio:9000')}",
             minio_access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
             minio_secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin123"),

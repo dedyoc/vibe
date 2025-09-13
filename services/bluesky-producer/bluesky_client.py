@@ -13,7 +13,14 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, AsyncGenerator
 import re
 
-from atproto import AsyncFirehoseSubscribeReposClient, parse_subscribe_repos_message, models
+from atproto import (
+    AsyncFirehoseSubscribeReposClient, 
+    parse_subscribe_repos_message,
+    models,
+    firehose_models,
+    CAR,
+    AtUri
+)
 from atproto.exceptions import AtProtocolError
 import structlog
 
@@ -114,15 +121,32 @@ class BlueskyFirehoseClient:
         log = self.logger.bind(correlation_id=self._correlation_id)
         log.info("Starting firehose stream processing")
         
+        # Create a queue to collect messages from the callback
+        message_queue = asyncio.Queue()
+        
+        def on_message_callback(message):
+            """Callback to handle incoming messages"""
+            try:
+                asyncio.create_task(message_queue.put(message))
+            except Exception as e:
+                log.warning("Error queuing message", error=str(e))
+        
         try:
-            async for message in self._client.get_messages(cursor=self._cursor):
+            # Start the firehose client with callback
+            await self._client.start(on_message_callback)
+            
+            # Process messages from the queue
+            while self._is_connected:
                 try:
-                    # Update cursor for resumption
-                    if hasattr(message, 'seq'):
-                        self._cursor = str(message.seq)
+                    # Wait for message with timeout
+                    message_bytes = await asyncio.wait_for(message_queue.get(), timeout=30.0)
                     
                     # Parse the message
-                    parsed_message = parse_subscribe_repos_message(message)
+                    parsed_message = parse_subscribe_repos_message(message_bytes)
+                    
+                    # Update cursor for resumption
+                    if hasattr(parsed_message, 'seq'):
+                        self._cursor = str(parsed_message.seq)
                     
                     # Process commits that contain posts
                     if hasattr(parsed_message, 'commit') and parsed_message.commit:
@@ -131,9 +155,11 @@ class BlueskyFirehoseClient:
                             self._last_message_time = datetime.now(timezone.utc)
                             yield post_data
                             
+                except asyncio.TimeoutError:
+                    log.debug("No messages received in 30 seconds, continuing...")
+                    continue
                 except Exception as e:
                     log.warning("Error processing firehose message", error=str(e))
-                    # Continue processing other messages
                     continue
                     
         except Exception as e:

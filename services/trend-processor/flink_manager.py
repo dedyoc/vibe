@@ -337,7 +337,7 @@ class FlinkJobDeployer:
             job_args = [
                 "--kafka-bootstrap-servers", self.config.get('kafka_bootstrap_servers', 'kafka:29092'),
                 "--kafka-topic-posts", self.config.get('kafka_topic_posts', 'bluesky-posts'),
-                "--kafka-topic-trends", self.config.get('kafka_topic_trends', 'windowed-keyword-counts'),
+                "--kafka-topic-trend-alerts", self.config.get('kafka_topic_trend_alerts', 'trend-alerts'),
                 "--minio-endpoint", self.config.get('minio_endpoint', 'http://minio:9000'),
                 "--minio-access-key", self.config.get('minio_access_key', 'minioadmin'),
                 "--minio-secret-key", self.config.get('minio_secret_key', 'minioadmin123'),
@@ -431,7 +431,7 @@ async def main():
     config = {
         'kafka_bootstrap_servers': 'kafka:29092',
         'kafka_topic_posts': 'bluesky-posts',
-        'kafka_topic_trends': 'windowed-keyword-counts',
+        'kafka_topic_trend_alerts': 'trend-alerts',
         'minio_endpoint': 'http://minio:9000',
         'minio_access_key': 'minioadmin',
         'minio_secret_key': 'minioadmin123',
