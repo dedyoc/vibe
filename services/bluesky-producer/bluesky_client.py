@@ -123,34 +123,47 @@ class BlueskyFirehoseClient:
         
         # Create a queue to collect messages from the callback
         message_queue = asyncio.Queue()
+        processing_active = True
         
-        def on_message_callback(message):
-            """Callback to handle incoming messages"""
+        async def on_message_callback(message):
+            """Async callback to handle incoming messages"""
             try:
-                asyncio.create_task(message_queue.put(message))
+                if processing_active:
+                    await message_queue.put(message)
             except Exception as e:
                 log.warning("Error queuing message", error=str(e))
         
+        # Start the firehose client in a background task
+        async def run_firehose():
+            try:
+                await self._client.start(on_message_callback)
+            except Exception as e:
+                log.error("Firehose client error", error=str(e))
+                await message_queue.put(None)  # Signal end of stream
+        
+        firehose_task = asyncio.create_task(run_firehose())
+        
         try:
-            # Start the firehose client with callback
-            await self._client.start(on_message_callback)
-            
             # Process messages from the queue
-            while self._is_connected:
+            while self._is_connected and processing_active:
                 try:
                     # Wait for message with timeout
-                    message_bytes = await asyncio.wait_for(message_queue.get(), timeout=30.0)
+                    message = await asyncio.wait_for(message_queue.get(), timeout=30.0)
+                    
+                    # Check for end of stream signal
+                    if message is None:
+                        break
                     
                     # Parse the message
-                    parsed_message = parse_subscribe_repos_message(message_bytes)
+                    parsed_message = parse_subscribe_repos_message(message)
                     
                     # Update cursor for resumption
                     if hasattr(parsed_message, 'seq'):
                         self._cursor = str(parsed_message.seq)
                     
                     # Process commits that contain posts
-                    if hasattr(parsed_message, 'commit') and parsed_message.commit:
-                        async for post_data in self._process_commit(parsed_message.commit):
+                    if isinstance(parsed_message, models.ComAtprotoSyncSubscribeRepos.Commit):
+                        async for post_data in self._process_commit(parsed_message):
                             self._posts_processed += 1
                             self._last_message_time = datetime.now(timezone.utc)
                             yield post_data
@@ -166,8 +179,17 @@ class BlueskyFirehoseClient:
             self._is_connected = False
             log.error("Firehose stream processing failed", error=str(e))
             raise AtProtocolError(f"Stream processing failed: {e}")
+        finally:
+            # Stop processing and clean up
+            processing_active = False
+            if not firehose_task.done():
+                firehose_task.cancel()
+                try:
+                    await firehose_task
+                except asyncio.CancelledError:
+                    pass
     
-    async def _process_commit(self, commit: Any) -> AsyncGenerator[PostData, None]:
+    async def _process_commit(self, commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> AsyncGenerator[PostData, None]:
         """Process a commit message and extract post data.
         
         Args:
@@ -176,26 +198,42 @@ class BlueskyFirehoseClient:
         Yields:
             PostData: Extracted post data
         """
-        if not hasattr(commit, 'ops') or not commit.ops:
+        if not commit.ops or not commit.blocks:
             return
         
         log = self.logger.bind(correlation_id=self._correlation_id)
         
-        for op in commit.ops:
-            try:
-                # Only process create operations for posts
-                if (hasattr(op, 'action') and op.action == 'create' and
-                    hasattr(op, 'path') and op.path and 
-                    op.path.startswith('app.bsky.feed.post/')):
-                    
-                    if hasattr(op, 'record') and op.record:
-                        post_data = await self._extract_post_data(op.record, commit)
-                        if post_data:
-                            yield post_data
+        try:
+            # Parse the CAR blocks
+            car = CAR.from_bytes(commit.blocks)
+            
+            for op in commit.ops:
+                try:
+                    # Only process create operations for posts
+                    if op.action == 'create' and op.path and op.path.startswith('app.bsky.feed.post/'):
+                        if not op.cid:
+                            continue
                             
-            except Exception as e:
-                log.warning("Error processing commit operation", error=str(e))
-                continue
+                        # Get the record data from CAR blocks
+                        record_raw_data = car.blocks.get(op.cid)
+                        if not record_raw_data:
+                            continue
+                        
+                        # Parse the record
+                        record = models.get_or_create(record_raw_data, strict=False)
+                        
+                        # Check if it's a post record
+                        if models.is_record_type(record, models.AppBskyFeedPost):
+                            post_data = await self._extract_post_data(record, commit)
+                            if post_data:
+                                yield post_data
+                                
+                except Exception as e:
+                    log.warning("Error processing commit operation", error=str(e))
+                    continue
+                    
+        except Exception as e:
+            log.warning("Error processing commit", error=str(e))
     
     async def _extract_post_data(self, record: Any, commit: Any) -> Optional[PostData]:
         """Extract PostData from a firehose record.

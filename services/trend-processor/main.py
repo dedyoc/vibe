@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Trend Processor Service - Flink Stream Processing Integration
+Trend Processor Service - Kafka-based Stream Processing
 
-This service manages the Flink stream processing job for trend detection,
-provides health checks, metrics, and job management endpoints.
+This service processes Bluesky posts from Kafka and performs real-time trend detection
+using sliding windows, providing health checks, metrics, and trend management endpoints.
 """
 
 import asyncio
@@ -21,8 +21,7 @@ import os
 sys.path.append(os.path.dirname(__file__))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from flink_manager import FlinkJobManager, FlinkJobDeployer
-from flink_job import create_flink_job_config
+from kafka_trend_processor import KafkaTrendProcessor
 
 # Configure logging
 logging.basicConfig(
@@ -39,28 +38,26 @@ FLINK_JOB_RESTARTS = Counter('flink_job_restarts_total', 'Total Flink job restar
 # FastAPI app for health checks and metrics
 app = FastAPI(title="Trend Processor", version="1.0.0")
 
-# Global variables for job management
-job_manager: Optional[FlinkJobManager] = None
-job_deployer: Optional[FlinkJobDeployer] = None
+# Global variables for trend processing
+trend_processor: Optional[KafkaTrendProcessor] = None
+processing_task: Optional[asyncio.Task] = None
 
 
 @app.get("/health")
 async def health_check() -> Dict[str, str]:
     """Health check endpoint for Docker health checks."""
-    global job_deployer
+    global trend_processor, processing_task
     
-    if not job_deployer:
+    if not trend_processor:
         return {"status": "starting", "service": "trend-processor"}
     
-    # Check Flink job health
-    job_health = await job_deployer.monitor_job_health()
-    
-    if job_health.get("status") == "healthy":
-        return {"status": "healthy", "service": "trend-processor", "flink_job": "running"}
-    elif job_health.get("status") == "no_job":
-        return {"status": "healthy", "service": "trend-processor", "flink_job": "not_deployed"}
+    # Check processing task health
+    if processing_task and not processing_task.done():
+        return {"status": "healthy", "service": "trend-processor", "processor": "running"}
+    elif processing_task and processing_task.done():
+        return {"status": "degraded", "service": "trend-processor", "processor": "stopped"}
     else:
-        return {"status": "degraded", "service": "trend-processor", "flink_job": job_health.get("status")}
+        return {"status": "healthy", "service": "trend-processor", "processor": "not_started"}
 
 
 @app.get("/metrics")
@@ -75,150 +72,111 @@ async def root() -> Dict[str, str]:
     return {
         "service": "trend-processor",
         "status": "running",
-        "description": "Real-time trend detection processor with Flink integration"
+        "description": "Real-time trend detection processor with Kafka streaming"
     }
 
 
-@app.get("/flink/status")
-async def flink_status() -> Dict[str, Any]:
-    """Get Flink cluster and job status."""
-    global job_manager, job_deployer
+@app.get("/stats")
+async def get_stats() -> Dict[str, Any]:
+    """Get trend processor statistics."""
+    global trend_processor, processing_task
     
-    if not job_manager:
-        raise HTTPException(status_code=503, detail="Flink manager not initialized")
+    if not trend_processor:
+        raise HTTPException(status_code=503, detail="Trend processor not initialized")
     
     try:
-        # Check cluster health
-        cluster_healthy = await job_manager.check_cluster_health()
-        
-        # List all jobs
-        jobs = await job_manager.list_jobs()
-        
-        # Get current job health if deployer exists
-        job_health = {}
-        if job_deployer:
-            job_health = await job_deployer.monitor_job_health()
-        
-        return {
-            "cluster_healthy": cluster_healthy,
-            "total_jobs": len(jobs),
-            "running_jobs": len([j for j in jobs if j.state == "RUNNING"]),
-            "current_job": job_health,
-            "all_jobs": [
-                {
-                    "job_id": job.job_id,
-                    "name": job.name,
-                    "state": job.state,
-                    "start_time": job.start_time.isoformat() if job.start_time else None
-                }
-                for job in jobs
-            ]
-        }
+        stats = trend_processor.get_stats()
+        stats["processing_task_running"] = processing_task and not processing_task.done()
+        return stats
     except Exception as e:
-        logger.error(f"Failed to get Flink status: {e}")
+        logger.error(f"Failed to get stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/flink/deploy")
-async def deploy_flink_job() -> Dict[str, Any]:
-    """Deploy the trend detection Flink job."""
-    global job_deployer
+@app.post("/processor/start")
+async def start_processor() -> Dict[str, Any]:
+    """Start the trend processor."""
+    global trend_processor, processing_task
     
-    if not job_deployer:
-        raise HTTPException(status_code=503, detail="Job deployer not initialized")
+    if not trend_processor:
+        raise HTTPException(status_code=503, detail="Trend processor not initialized")
+    
+    if processing_task and not processing_task.done():
+        return {"status": "already_running", "message": "Processor is already running"}
     
     try:
-        job_id = await job_deployer.deploy_trend_detection_job()
-        if job_id:
-            return {"status": "success", "job_id": job_id, "message": "Job deployed successfully"}
-        else:
-            raise HTTPException(status_code=500, detail="Failed to deploy job")
+        processing_task = asyncio.create_task(trend_processor.start_processing())
+        return {"status": "success", "message": "Trend processor started successfully"}
     except Exception as e:
-        logger.error(f"Failed to deploy Flink job: {e}")
+        logger.error(f"Failed to start processor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/flink/stop")
-async def stop_flink_job() -> Dict[str, Any]:
-    """Stop the current Flink job."""
-    global job_deployer
+@app.post("/processor/stop")
+async def stop_processor() -> Dict[str, Any]:
+    """Stop the trend processor."""
+    global processing_task
     
-    if not job_deployer:
-        raise HTTPException(status_code=503, detail="Job deployer not initialized")
+    if not processing_task or processing_task.done():
+        return {"status": "not_running", "message": "Processor is not running"}
     
     try:
-        success = await job_deployer.stop_current_job()
-        if success:
-            return {"status": "success", "message": "Job stopped successfully"}
-        else:
-            raise HTTPException(status_code=500, detail="Failed to stop job")
+        processing_task.cancel()
+        try:
+            await processing_task
+        except asyncio.CancelledError:
+            pass
+        return {"status": "success", "message": "Trend processor stopped successfully"}
     except Exception as e:
-        logger.error(f"Failed to stop Flink job: {e}")
+        logger.error(f"Failed to stop processor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def initialize_flink_integration() -> None:
-    """Initialize Flink job manager and deployer."""
-    global job_manager, job_deployer
+async def initialize_trend_processor() -> None:
+    """Initialize the Kafka-based trend processor."""
+    global trend_processor
     
     try:
         # Get configuration from environment
-        flink_host = os.getenv("FLINK_JOBMANAGER_HOST", "flink-jobmanager")
-        flink_port = int(os.getenv("FLINK_JOBMANAGER_PORT", "8081"))
+        kafka_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+        kafka_topic_posts = os.getenv("KAFKA_TOPIC_POSTS", "bluesky-posts")
+        kafka_topic_trends = os.getenv("KAFKA_TOPIC_TRENDS", "trend-alerts")
+        redis_host = os.getenv("REDIS_HOST", "redis")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        window_size_minutes = int(os.getenv("WINDOW_SIZE_MINUTES", "10"))
         
-        # Create Flink job configuration
-        flink_config = create_flink_job_config(
-            kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092"),
-            kafka_topic_posts=os.getenv("KAFKA_TOPIC_POSTS", "bluesky-posts"),
-            kafka_topic_windowed_counts=os.getenv("KAFKA_TOPIC_WINDOWED_COUNTS", "windowed-keyword-counts"),
-            kafka_topic_trend_alerts=os.getenv("KAFKA_TOPIC_TREND_ALERTS", "trend-alerts"),
-            minio_endpoint=f"http://{os.getenv('MINIO_ENDPOINT', 'minio:9000')}",
-            minio_access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
-            minio_secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin123"),
-            parallelism=int(os.getenv("FLINK_PARALLELISM", "2")),
-            window_size_minutes=int(os.getenv("WINDOW_SIZE_MINUTES", "10"))
+        # Initialize trend processor
+        trend_processor = KafkaTrendProcessor(
+            kafka_bootstrap_servers=kafka_servers,
+            kafka_topic_posts=kafka_topic_posts,
+            kafka_topic_trends=kafka_topic_trends,
+            redis_host=redis_host,
+            redis_port=redis_port,
+            window_size_minutes=window_size_minutes
         )
         
-        # Initialize job manager
-        job_manager = FlinkJobManager(flink_host, flink_port)
-        await job_manager.__aenter__()
-        
-        # Initialize job deployer
-        job_deployer = FlinkJobDeployer(job_manager, flink_config)
-        
-        logger.info("Flink integration initialized successfully")
-        
-        # Wait for Flink cluster to be ready
-        max_retries = 30
-        for attempt in range(max_retries):
-            if await job_manager.check_cluster_health():
-                logger.info("Flink cluster is healthy and ready")
-                break
-            else:
-                logger.info(f"Waiting for Flink cluster... (attempt {attempt + 1}/{max_retries})")
-                await asyncio.sleep(10)
-        else:
-            logger.warning("Flink cluster health check timed out, but continuing...")
+        logger.info("Trend processor initialized successfully")
         
     except Exception as e:
-        logger.error(f"Failed to initialize Flink integration: {e}")
+        logger.error(f"Failed to initialize trend processor: {e}")
         raise
 
 
-async def cleanup_flink_integration() -> None:
-    """Cleanup Flink integration resources."""
-    global job_manager, job_deployer
+async def cleanup_trend_processor() -> None:
+    """Cleanup trend processor resources."""
+    global processing_task
     
     try:
-        if job_deployer:
-            await job_deployer.stop_current_job()
+        if processing_task and not processing_task.done():
+            processing_task.cancel()
+            try:
+                await processing_task
+            except asyncio.CancelledError:
+                pass
         
-        if job_manager:
-            await job_manager.__aexit__(None, None, None)
-        
-        logger.info("Flink integration cleaned up successfully")
+        logger.info("Trend processor cleaned up successfully")
     except Exception as e:
-        logger.error(f"Failed to cleanup Flink integration: {e}")
+        logger.error(f"Failed to cleanup trend processor: {e}")
 
 
 async def main() -> None:
@@ -229,20 +187,20 @@ async def main() -> None:
     kafka_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
     redis_host = os.getenv("REDIS_HOST", "redis")
     redis_port = int(os.getenv("REDIS_PORT", "6379"))
-    minio_endpoint = os.getenv("MINIO_ENDPOINT", "minio:9000")
-    flink_host = os.getenv("FLINK_JOBMANAGER_HOST", "flink-jobmanager")
-    flink_port = int(os.getenv("FLINK_JOBMANAGER_PORT", "8081"))
     log_level = os.getenv("LOG_LEVEL", "INFO")
     prometheus_port = int(os.getenv("PROMETHEUS_PORT", "8001"))
     
     logger.info(f"Configuration: Kafka={kafka_servers}, Redis={redis_host}:{redis_port}")
-    logger.info(f"MinIO={minio_endpoint}, Flink={flink_host}:{flink_port}")
     
     try:
-        # Initialize Flink integration
-        await initialize_flink_integration()
+        # Initialize trend processor
+        await initialize_trend_processor()
         
-        logger.info("Trend Processor service is ready with Flink integration")
+        logger.info("Trend Processor service is ready with Kafka streaming")
+        
+        # Start the trend processor automatically in background
+        global processing_task
+        processing_task = asyncio.create_task(trend_processor.start_processing())
         
         # Start the FastAPI server for health checks and metrics
         config = uvicorn.Config(
@@ -252,14 +210,20 @@ async def main() -> None:
             log_level=log_level.lower()
         )
         server = uvicorn.Server(config)
-        await server.serve()
+        
+        # Run both the server and processor concurrently
+        await asyncio.gather(
+            server.serve(),
+            processing_task,
+            return_exceptions=True
+        )
         
     except Exception as e:
         logger.error(f"Failed to start Trend Processor service: {e}")
         raise
     finally:
         # Cleanup resources
-        await cleanup_flink_integration()
+        await cleanup_trend_processor()
 
 
 if __name__ == "__main__":

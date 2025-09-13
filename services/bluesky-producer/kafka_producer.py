@@ -82,8 +82,8 @@ class KafkaPostProducer:
             'acks': acks,
             'retries': retries,
             'enable_idempotence': enable_idempotence,
-            'max_in_flight_requests_per_connection': 5 if enable_idempotence else 1,
-            'compression_type': 'snappy',  # Efficient compression
+            'max_in_flight_requests_per_connection': 1,  # Required for idempotent producer
+            'compression_type': 'gzip',  # Use gzip instead of snappy
             'request_timeout_ms': 30000,
             'delivery_timeout_ms': 120000,
         }
